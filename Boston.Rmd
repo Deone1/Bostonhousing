@@ -1,0 +1,388 @@
+---
+title: "Boston Housing Data"
+author: "Krishna Chaitanya Vamaraju"
+date: "March 17, 2018"
+output: rmarkdown::github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+## Data description
+The Boston data frame has 506 rows and 14 columns.
+This data frame contains the following columns:
+
+crim
+per capita crime rate by town.
+
+zn
+proportion of residential land zoned for lots over 25,000 sq.ft.
+
+indus
+proportion of non-retail business acres per town.
+
+chas
+Charles River dummy variable (= 1 if tract bounds river; 0 otherwise).
+
+nox
+nitrogen oxides concentration (parts per 10 million).
+
+rm
+average number of rooms per dwelling.
+
+age
+proportion of owner-occupied units built prior to 1940.
+
+dis
+weighted mean of distances to five Boston employment centres.
+
+rad
+index of accessibility to radial highways.
+
+tax
+full-value property-tax rate per $10,000.
+
+ptratio
+pupil-teacher ratio by town.
+
+black
+1000(Bk - 0.63)^2 where Bk is the proportion of blacks by town.
+
+lstat
+lower status of the population (percent).
+
+medv
+median value of owner-occupied homes in $1000s.
+
+# Add required packages
+```{r message = FALSE}
+library(MASS) #Boston Housing Data Set
+library(dplyr) #Data Wrangling
+library(tidyverse) #Data Wrangling
+library(knitr) #Knitting RMDs and functionalities
+library(reshape2) #Data Wrangling
+library(ggplot2) #Data Visualization
+library(GGally) #Data Visualization
+library(boot) #Resampling methods
+library(rpart) #Tree modeling
+library(mgcv) #GAM modeling
+library(neuralnet) #Neural Networks Model
+library(plyr) #Data Wrangling
+library(caret) #Cross Validation for Neural Networks
+
+```
+
+```{r}
+data("Boston")
+boston <- na.omit(Boston)
+rm("Boston")
+#Set Seed
+set.seed(12399290)
+#Training and Testing Data
+subset = sample(nrow(Boston), nrow(Boston) * 0.75)
+boston.train = Boston[subset, ]
+boston.test = Boston[-subset, ]
+
+```
+
+We’ll fit a linear model for the log price, on the thought that it makes some sense for the factors which raise or lower house values to multiply together, rather than just adding.
+
+```{r}
+boston.lm <- lm(log(medv)~.,data=boston.train)
+print(summary(boston.lm),signif.stars=FALSE,digits=3)
+
+```
+The R-Square of the Model is 78.6 % when all predictors are included.
+
+A function called `predlims` is created to calculate the confidence intervals for the predicted values of the fit for a 95% CI.Since the regression was performed using the log of response the exponent of the predicted values are plotted against the actual values in the plots.
+```{r}
+predlims <- function(preds,sigma) {
+prediction.sd <- sqrt(preds$se.fit^2+sigma^2)
+upper <- preds$fit+2*prediction.sd
+lower <- preds$fit-2*prediction.sd
+lims <- cbind(lower=lower,upper=upper)
+return(lims)
+}
+train.preds.lm <- predict(boston.lm,se.fit=TRUE)
+predlims.lm <- predlims(train.preds.lm,sigma=summary(boston.lm)$sigma)
+plot(boston.train$medv,exp(train.preds.lm$fit),type="n",
+xlab="Actual price ($)",ylab="Predicted ($)", main="Linear model",
+ylim=c(0,exp(max(predlims.lm))))
+segments(boston.train$medv,exp(predlims.lm[,"lower"]),
+boston.train$medv,exp(predlims.lm[,"upper"]), col="grey")
+abline(a=0,b=1,lty="dashed")
+points(boston.train$medv,exp(train.preds.lm$fit),pch=16,cex=0.1)
+
+```
+*Actual median house values (horizontal axis) versus those predicted by the linear model (black dots), plus or minus two predictive standard errors (grey bars). The dashed line shows where actual and predicted prices are equal. And the segments are the standard errors of the predictied points. Predictions are exponentiated so they’re comparable to the original values (and because it’s easier to grasp dollars than log-dollars).*
+
+
+The in-sample MSE for log(medv) is `r:glm.in.mse`
+```{r}
+glm.in.mse <- print(mean(residuals(boston.lm)^2),digits = 3)
+
+```
+
+Percent of predicted values within the constructed CIs is :
+```{r}
+print(mean((log(boston.train$medv) <= predlims.lm[,"upper"])
+& (log(boston.train$medv) >= predlims.lm[,"lower"])),digits = 3)
+
+```
+
+The +- 2 standard errors do have pretty reasonable coverage; about 96% of actual precise fall within the prediction limits
+
+
+```{r}
+print(cat("BIC is " ,extractAIC(boston.lm, k=log(nrow(boston.train)))))
+print(cat("AIC is " ,extractAIC(boston.lm)))
+```
+
+mse for the test data is `r:test.preds.lm`
+```{r}
+test.preds.lm <- predict(object = boston.lm, newdata = boston.test)
+print(glm.out.mse <- mean((predict(object = boston.lm, newdata = boston.test)-log(boston.test$medv))^2),digits=3)
+
+```
+
+Residual Plots for the Multiple Linear Regression Model :
+
+```{r}
+par(mfrow=c(2,2))
+plot(boston.lm)
+```
+
+The plots indicate a sort of non-linearity between the predictors and target variable.
+Hence,this is an indication to model the problem with complex models such as Trees or Generalized Addtive Models.
+
+Predicting with `Cross-Validation`
+
+The average cross-validation error for 10-fold cross-validation is :
+```{r}
+set.seed(123)
+fullmodel = glm(log(medv) ~ ., data=boston)
+cvmodel <- cv.glm(data = boston, glmfit = fullmodel, K = 10)
+print(cvmodel$delta[2],digits=3)
+
+```
+The cross-validation MSE is 0.0379 for `log(medv)` which is higher than earlier.
+
+
+
+## Fitting Regression Trees to the Boston Data Set
+```{r}
+#Regression Trees
+library(rattle)
+boston.rpart <- rpart(formula = log(medv) ~ ., data = boston.train)
+fancyRpartPlot(boston.rpart)
+
+```
+
+
+
+The in-sample MSE is :
+```{r}
+train.pred.tree = predict(boston.rpart, boston.train)
+tree.in.mse <-mean((train.pred.tree - log(boston.train$medv))^2)
+print(tree.in.mse,digits=3)
+```
+
+The out-of-sample MSE is :
+```{r}
+test.pred.tree = predict(boston.rpart, boston.test)
+tree.out.mse <- mean((test.pred.tree - log(boston.test$medv))^2)
+print(tree.out.mse,digits=3)
+```
+
+Estimating the Complex-parameter using LOOCV :
+
+```{r}
+plotcp(boston.rpart)
+
+```
+
+```{r}
+printcp(boston.rpart)
+
+```
+```{r}
+boston.prune = prune(boston.rpart, cp = boston.rpart$cptable[which.min(boston.rpart$cptable[,"xerror"]),"CP"])
+fancyRpartPlot(boston.prune)
+
+```
+
+The train MSE for the pruned Tree is
+```{r}
+train.preds.tree = predict(boston.prune)
+tree.in.mse <-mean((train.preds.tree - log(boston.train$medv))^2)
+print(tree.in.mse,digits = 3)
+```
+
+
+The Test MSE for the pruned Tree is :
+```{r}
+test.preds.tree <- predict(boston.prune,boston.test)
+tree.out.mse <- mean((test.preds.tree - log(boston.test$medv))^2)
+print(tree.out.mse,digits = 3)
+```
+
+Cross Validation For Trees :
+```{r}
+cartTune <- train(log(medv)~., 
+           data = boston.train,
+           method = "rpart",
+           tuneLength = 25,trControl = trainControl(method = "cv"))
+cartTune
+print(cartTune$finalModel)
+
+
+### Plot the tuning results
+plot(cartTune, scales = list(x = list(log = 10)))
+ 
+
+
+
+```
+
+```{r}
+
+
+# Generalized Linear Models
+
+require(mgcv)
+boston.gam <- gam(log(boston.train$medv)~ s(crim,k=4)+ s(zn,k=4)+s(indus,k=4)+chas+s(nox,k=4)+s(rm,k=4)+
+                    s(age,k=4)+s(dis,k=4)+s(rad,k=4)+s(tax,k=4)+s(ptratio,k=4)+s(black,k=4)+s(lstat,k=4),data =boston.train)
+train.preds.gam <- predict(boston.gam,se.fit=TRUE)
+predlims.gam <- predlims(train.preds.gam,sigma=sqrt(boston.gam$sig2))
+cat("Percent data in constructed CIs is:", mean((log(boston.train$medv) <= predlims.gam[,"upper"]) &
+(log(boston.train$medv) >= predlims.gam[,"lower"])))
+```
+
+MSE of in-Sample and Out Sample for GAM fit 
+```{r}
+test.preds.gam <- predict(boston.gam,boston.test)
+gam.in.mse <- mean((train.preds.gam$fit - log(boston.train$medv))^2)
+
+print(gam.in.mse,digits=3)
+
+```
+
+MSE for Out-Of-Sample for GAM fit :
+```{r}
+gam.out.mse <- mean((test.preds.gam- log(boston.test$medv))^2)
+print(gam.out.mse,digits=3)
+```
+
+```{r}
+plot(boston.train$medv,exp(train.preds.gam$fit),type="n",
+xlab="Actual price ($)",ylab="Predicted ($)", main="First additive model",
+ylim=c(0,exp(max(predlims.gam))))
+segments(boston.train$medv,exp(predlims.gam[,"lower"]),
+boston.train$medv,exp(predlims.gam[,"upper"]), col="grey")
+abline(a=0,b=1,lty="dashed")
+points(boston.train$medv,exp(train.preds.gam$fit),pch=16,cex=0.1)
+
+```
+
+*Actual versus predicted prices for the additive model.*
+
+```{r}
+plot(boston.gam,scale=0,se=2,shade=TRUE,pages=2)
+```
+
+
+*The estimated partial response functions for the additive model, with a shaded region
+showing ±2 standard errors. The tick marks along the horizontal axis show the observed values of the input variables (a rug plot);  The error bars are wider where there are fewer observations.The vertical scales are logarithmic*
+
+AIC and BIC of the Models :
+```{r}
+cat("AIC of GAM Model is ",round(extractAIC(boston.gam),3))
+    
+cat("\nBIC of GAM Model is ",round(extractAIC(boston.gam,k = length(boston.train)),3))
+
+```
+
+The RMSE for log(medv) obtained through 10-fold cv is :
+```{r}
+b <- train(log(medv)~crim+zn+indus+chas+nox+rm+age+dis
+           +rad+tax+ptratio+black+lstat, 
+           data = boston.train,
+           method = "gam",
+           trControl = trainControl(method = "cv", number = 10),
+           tuneGrid = data.frame(method = "GCV.Cp", select = FALSE)
+)
+
+```
+
+The summary of the above fit is as below :
+```{r}
+print(summary(b),digits =3)
+
+
+```
+The  difference between the testing and training errors of the GAM and GLM model indicate that the bias of the model is reduced when non-linearity with X's and `medv` is assumed .
+
+
+
+## Neural Networks
+
+The Neural Network is built using the `caret` package in R.
+```{r}
+
+nnetGrid <- expand.grid(decay = c(0, 0.01, .1), 
+                        size = c(1, 3, 5, 7, 9, 11, 13), 
+                        bag = FALSE)
+
+set.seed(100)
+nnetTune <- train(log(medv)~crim+zn+indus+chas+nox+rm+age+dis
+                  +rad+tax+ptratio+black+lstat,
+                  data = boston.train,
+                  method = "avNNet",
+                  tuneGrid = nnetGrid,
+                  trControl = trainControl(method = "cv", number = 10),
+                  preProc = c("center", "scale"),
+                  linout = TRUE,
+                  trace = FALSE,
+                  maxit = 1000,
+                  allowParallel = FALSE)
+
+
+```
+
+```{r}
+nnetTune$finalModel
+plot(nnetTune)
+trainResults <- data.frame(predict(nnetTune))
+testResults <- data.frame(predict(nnetTune,boston.test))
+
+
+
+```
+
+Train and Test MSE for Neural Networks
+```{r}
+nn.in.mse <- print(mean((trainResults - log(boston.train$medv))^2),digits=3)
+nn.out.mse <- print(mean((testResults - log(boston.test$medv))^2),digits=3)
+cat("MSE of Neural Network Model is ",round(nn.in.mse,3))
+cat("\nMSE of Neural Network Model is ",round(nn.out.mse,3))
+
+```
+
+## Analyzing all the Four Models
+
+
+```{r}
+InSample.MSE <- c(glm.in.mse,tree.in.mse,gam.in.mse,nn.in.mse)
+
+OutSample.MSE <- c(glm.out.mse,tree.out.mse,gam.out.mse,nn.out.mse)
+plot(1:4,InSample.MSE,type="b",lty="dashed",ylim=c(min(InSample.MSE),max(OutSample.MSE)),xlab = "Method",ylab = "MSE",xaxt='n')
+lines(OutSample.MSE,type ="b",lty="solid",col = "red")
+axis(1, at=1:4, labels=c("glm","tree","gam","nn"))
+legend("topright",legend=c("In Sample MSE","Out of Sample MSE"),
+       lty=c("dashed","solid"))
+```
+
+The plot above indicates that Neural networks perform the best for both the train and test errors.Hence, we go ahead with the Neural networks to build the Model
+
+
+
